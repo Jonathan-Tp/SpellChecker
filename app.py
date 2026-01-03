@@ -270,3 +270,5 @@ st.markdown("""
 ✅ Customizable checking options  
 ✅ Clean, user-friendly interface  
 """)
+
+

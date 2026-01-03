@@ -6,6 +6,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable, Optional, Dict, Any, List, Tuple, Callable
 
+from huggingface_hub import hf_hub_download
+
 import nltk
 from nltk import pos_tag
 from nltk.tokenize import sent_tokenize, word_tokenize
@@ -49,6 +51,11 @@ def tokenize_paragraph(paragraph: str) -> list[str]:
 # ----------------------------
 # Bigram LM
 # ----------------------------
+from pathlib import Path
+from typing import Optional
+from collections import Counter
+import math
+
 class BigramLM:
     def __init__(self, k: float = 0.1) -> None:
         self.k = k
@@ -66,8 +73,41 @@ class BigramLM:
         k: float = 0.1,
         bigram_delim: str = " ",
         lowercase_vocab: bool = True,
+        # --- NEW: Hugging Face options ---
+        hf_repo_id: Optional[str] = None,
+        hf_revision: Optional[str] = None,
+        hf_token: Optional[str] = None,
+        hf_repo_type: str = "model",  # usually "model"
     ) -> "BigramLM":
+        """
+        Load unigram/bigram counts from JSON.
+
+        - If hf_repo_id is None: unigram_path/bigram_path are treated as local paths.
+        - If hf_repo_id is set: unigram_path/bigram_path are treated as *filenames in the HF repo*
+          and will be downloaded to the local HF cache first.
+        """
         lm = cls(k=k)
+
+        # If HF repo is provided, download the files first.
+        if hf_repo_id:
+            # treat arguments as filenames inside the HF repo
+            uni_file = str(unigram_path)
+            bi_file = str(bigram_path)
+
+            unigram_path = hf_hub_download(
+                repo_id=hf_repo_id,
+                filename=uni_file,
+                revision=hf_revision,
+                token=hf_token,
+                repo_type=hf_repo_type,
+            )
+            bigram_path = hf_hub_download(
+                repo_id=hf_repo_id,
+                filename=bi_file,
+                revision=hf_revision,
+                token=hf_token,
+                repo_type=hf_repo_type,
+            )
 
         unigram_data = _read_json_dict(unigram_path)
         bigram_data = _read_json_dict(bigram_path)
@@ -99,6 +139,7 @@ class BigramLM:
 
     def logprob(self, prev: str, w: str) -> float:
         return math.log(self.prob(prev, w))
+
 
 
 # ----------------------------
@@ -1004,10 +1045,10 @@ def format_label_output_for_export(label_output: dict) -> dict:
 # ----------------------------
 def setup():
     lm = BigramLM.from_json(
-        unigram_path="unigram.json",
-        bigram_path="bigram.json",
+        "unigram.json",
+        "bigram.json",
         k=0.1,
-        lowercase_vocab=True,
+        hf_repo_id="JonathanChang/bert-finance-continued",
     )
 
     vocab = {w.lower() for w in lm.V}
