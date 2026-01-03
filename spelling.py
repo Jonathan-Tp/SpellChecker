@@ -306,7 +306,6 @@ def label_paragraph_and_mask_for_bert_nonword(
     out[SPECIAL_MASKED_KEY] = detok.detokenize(masked_tokens)
     return out
 
-
 # ----------------------------
 # Context labeling + masking
 # ----------------------------
@@ -509,13 +508,87 @@ def label_paragraph_and_mask_for_bert_context(
     label_output[SPECIAL_MASKED_KEY] = detok.detokenize(masked_tokens)
     return label_output
 
-from typing import Iterable, Optional, Dict, Any, List, Tuple, Callable
+# from typing import Iterable, Optional, Dict, Any, List, Tuple, Callable
+
+# import torch
+# from nltk.tokenize.treebank import TreebankWordDetokenizer
+# from transformers import AutoTokenizer, AutoModelForMaskedLM
+
+# # SPECIAL_MASKED_KEY is already defined earlier in your file; if not, uncomment:
+# # SPECIAL_MASKED_KEY = ("__MASKED__", -1)
+
+
+# def make_unified_bert_suggester(
+#     model_ref: str,
+#     *,
+#     candidate_vocab: Optional[Iterable[str]] = None,
+#     tau: float = 0.0,
+#     fallback_top_k: int = 30,
+# ) -> Callable[[Dict[Any, Any]], Dict[Any, Any]]:
+#     """
+#     Unified BERT suggester.
+
+#     label_output format:
+#       - SPECIAL_MASKED_KEY -> masked sentence string with [MASK] tokens
+#       - (token, idx) -> info dict, where:
+#             info["e"] == "c"   => context error
+#             info["e"] != "c"   => typo / nonword / other
+#             info["suggestions"] (for typos) is an optional list of candidates.
+
+#     Behaviour per [MASK] position:
+
+#       1. Use BERT to score candidates.
+#       2. Filter to top-k highest-probability candidates that are in candidate_vocab
+#          (if provided; otherwise fall back to raw BERT tokens).
+#       3. Sort those top-k by edit distance to the original word, ascending
+#          (ties broken by probability descending) and store that order in
+#          info["suggestions"].
+#       4. Use tau margin (if > 0) to decide whether to actually replace the
+#          original word in the context. The committed token is used to update
+#          SPECIAL_MASKED_KEY and later masks.
+#     """
+
+#     device = torch.device(
+#         "mps" if torch.backends.mps.is_available()
+#         else "cuda" if torch.cuda.is_available()
+#         else "cpu"
+#     )
+
+#     tokenizer = AutoTokenizer.from_pretrained(model_ref)
+#     # ---- robust load: avoid meta tensors / accelerate dispatch ----
+#     load_kwargs = {
+#         "low_cpu_mem_usage": False,  # avoid meta-init pathways
+#         "device_map": None,          # avoid accelerate device dispatch/offload
+#     }
+
+#     # MPS is happiest with float32 for many transformer ops
+#     if device.type == "mps":
+#         load_kwargs["torch_dtype"] = torch.float32
+
+#     model = AutoModelForMaskedLM.from_pretrained(model_ref, **load_kwargs)
+
+#     # Safety check: if anything is still meta, fail early with a clearer hint
+#     if any(getattr(p, "is_meta", False) for p in model.parameters()):
+#         raise RuntimeError(
+#             "Model loaded with meta parameters. This usually means accelerate/device_map "
+#             "or low_cpu_mem_usage meta-init got triggered. Ensure device_map=None and "
+#             "low_cpu_mem_usage=False when calling from_pretrained."
+#         )
+
+#     model = model.to(device)
+#     model.eval()
+    # model = AutoModelForMaskedLM.from_pretrained(model_ref).to(device)
+    # model.eval()
+
+from typing import Iterable, Optional, Dict, Any, Callable
+import os
+from functools import lru_cache
 
 import torch
 from nltk.tokenize.treebank import TreebankWordDetokenizer
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-# SPECIAL_MASKED_KEY is already defined earlier in your file; if not, uncomment:
+# SPECIAL_MASKED_KEY should exist somewhere in your project:
 # SPECIAL_MASKED_KEY = ("__MASKED__", -1)
 
 
@@ -527,59 +600,70 @@ def make_unified_bert_suggester(
     fallback_top_k: int = 30,
 ) -> Callable[[Dict[Any, Any]], Dict[Any, Any]]:
     """
-    Unified BERT suggester.
+    Unified BERT suggester (HF Hub only).
 
-    label_output format:
-      - SPECIAL_MASKED_KEY -> masked sentence string with [MASK] tokens
-      - (token, idx) -> info dict, where:
-            info["e"] == "c"   => context error
-            info["e"] != "c"   => typo / nonword / other
-            info["suggestions"] (for typos) is an optional list of candidates.
+    model_ref MUST be a Hugging Face repo id like: "your-username/bert-finance-continued".
+    (No local paths.)
 
-    Behaviour per [MASK] position:
-
-      1. Use BERT to score candidates.
-      2. Filter to top-k highest-probability candidates that are in candidate_vocab
-         (if provided; otherwise fall back to raw BERT tokens).
-      3. Sort those top-k by edit distance to the original word, ascending
-         (ties broken by probability descending) and store that order in
-         info["suggestions"].
-      4. Use tau margin (if > 0) to decide whether to actually replace the
-         original word in the context. The committed token is used to update
-         SPECIAL_MASKED_KEY and later masks.
+    If the HF repo is private, set HF_TOKEN (or HUGGINGFACEHUB_API_TOKEN) in env/secrets.
     """
 
+    # ---- Enforce "HF Hub only" ----
+    if os.path.exists(model_ref):
+        raise ValueError(
+            f"model_ref='{model_ref}' looks like a local path. "
+            "Pass a Hugging Face repo id like 'user/model'."
+        )
+    if "/" not in model_ref:
+        raise ValueError(
+            f"model_ref='{model_ref}' doesn't look like a Hugging Face repo id. "
+            "Expected format 'user/model'."
+        )
+
+    # ---- Device selection ----
     device = torch.device(
         "mps" if torch.backends.mps.is_available()
         else "cuda" if torch.cuda.is_available()
         else "cpu"
     )
 
-    tokenizer = AutoTokenizer.from_pretrained(model_ref)
-    # ---- robust load: avoid meta tensors / accelerate dispatch ----
-    load_kwargs = {
-        "low_cpu_mem_usage": False,  # avoid meta-init pathways
-        "device_map": None,          # avoid accelerate device dispatch/offload
-    }
+    # ---- Read token (only needed for private repos) ----
+    hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
-    # MPS is happiest with float32 for many transformer ops
-    if device.type == "mps":
-        load_kwargs["torch_dtype"] = torch.float32
+    # ---- from_pretrained wrapper: supports both `token=` and `use_auth_token=` ----
+    def _from_pretrained(cls, repo_id: str, token: Optional[str], **kwargs):
+        if token:
+            try:
+                return cls.from_pretrained(repo_id, token=token, **kwargs)
+            except TypeError:
+                return cls.from_pretrained(repo_id, use_auth_token=token, **kwargs)
+        return cls.from_pretrained(repo_id, **kwargs)
 
-    model = AutoModelForMaskedLM.from_pretrained(model_ref, **load_kwargs)
+    # ---- Cached loader (so multiple calls won't re-download in the same process) ----
+    @lru_cache(maxsize=2)
+    def _load(repo_id: str):
+        tok = _from_pretrained(AutoTokenizer, repo_id, hf_token)
 
-    # Safety check: if anything is still meta, fail early with a clearer hint
-    if any(getattr(p, "is_meta", False) for p in model.parameters()):
-        raise RuntimeError(
-            "Model loaded with meta parameters. This usually means accelerate/device_map "
-            "or low_cpu_mem_usage meta-init got triggered. Ensure device_map=None and "
-            "low_cpu_mem_usage=False when calling from_pretrained."
-        )
+        load_kwargs = {
+            "low_cpu_mem_usage": False,  # avoid meta-init pathways
+            "device_map": None,          # avoid accelerate device dispatch/offload
+        }
+        if device.type == "mps":
+            load_kwargs["torch_dtype"] = torch.float32
 
-    model = model.to(device)
-    model.eval()
-    # model = AutoModelForMaskedLM.from_pretrained(model_ref).to(device)
-    # model.eval()
+        mdl = _from_pretrained(AutoModelForMaskedLM, repo_id, hf_token, **load_kwargs)
+
+        if any(getattr(p, "is_meta", False) for p in mdl.parameters()):
+            raise RuntimeError(
+                "Model loaded with meta parameters. Ensure device_map=None and low_cpu_mem_usage=False."
+            )
+
+        mdl = mdl.to(device)
+        mdl.eval()
+        return tok, mdl
+
+    tokenizer, model = _load(model_ref)
+    detok = TreebankWordDetokenizer()
 
     MASK = tokenizer.mask_token
     MASK_ID = tokenizer.mask_token_id
@@ -930,7 +1014,7 @@ def setup():
     print(len(vocab))
 
     suggester = make_unified_bert_suggester(
-        "bert_finance_continued",
+        "JonathanChang/bert-finance-continued",
         candidate_vocab=vocab,
         tau=0,          # optional
         fallback_top_k=20 # optional
