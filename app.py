@@ -3,12 +3,21 @@ import pandas as pd
 import spelling
 import re
 import json
+import os
+import traceback
 
 # This is to avoid streamlit always rerun
 @st.cache_resource
 def setup():
     return spelling.setup()
-lm, vocab, suggester = setup()
+
+try:
+    lm, vocab, suggester = setup()
+except Exception as e:
+    st.error("❌ setup() crashed. Full traceback below:")
+    st.code(traceback.format_exc())
+    st.stop()
+
 
 if "analysis_result" not in st.session_state:
     st.session_state.analysis_result = None
