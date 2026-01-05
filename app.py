@@ -11,12 +11,12 @@ import traceback
 def setup():
     return spelling.setup()
 
-try:
-    lm, vocab, suggester = setup()
-except Exception as e:
-    st.error("❌ setup() crashed. Full traceback below:")
-    st.code(traceback.format_exc())
-    st.stop()
+# try:
+#     lm, vocab, suggester = setup()
+# except Exception as e:
+#     st.error("❌ setup() crashed. Full traceback below:")
+#     st.code(traceback.format_exc())
+#     st.stop()
 
 
 if "analysis_result" not in st.session_state:
