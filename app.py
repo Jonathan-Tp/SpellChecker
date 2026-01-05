@@ -63,7 +63,11 @@ input_text = st.text_area(
 
 def run_analysis():
     if input_text.strip():
-        lm, vocab, suggester = setup()
+        # lm, vocab, suggester = setup()
+        lm, vocab = spelling.setup1()
+        print("lm")
+        suggester = spelling.setup2()
+        print("suggester")
         st.session_state.analysis_result = spelling.model(lm, vocab, suggester, paragraph=input_text, mode="c")
         st.session_state.last_input = input_text
 

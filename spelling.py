@@ -1043,7 +1043,26 @@ def format_label_output_for_export(label_output: dict) -> dict:
 # ----------------------------
 # Pipelines
 # ----------------------------
-def setup():
+# def setup():
+#     lm = BigramLM.from_json(
+#         "unigram.json",
+#         "bigram.json",
+#         k=0.1,
+#         hf_repo_id="JonathanChang/bert-finance-continued",
+#     )
+
+#     vocab = {w.lower() for w in lm.V}
+#     print(len(vocab))
+
+#     suggester = make_unified_bert_suggester(
+#         "JonathanChang/bert-finance-continued",
+#         candidate_vocab=vocab,
+#         tau=0,          # optional
+#         fallback_top_k=20 # optional
+#     )
+    
+#     return lm, vocab, suggester
+def setup1():
     lm = BigramLM.from_json(
         "unigram.json",
         "bigram.json",
@@ -1052,16 +1071,16 @@ def setup():
     )
 
     vocab = {w.lower() for w in lm.V}
-    print(len(vocab))
+    return lm, vocab
 
+def setup2():
     suggester = make_unified_bert_suggester(
         "JonathanChang/bert-finance-continued",
         candidate_vocab=vocab,
         tau=0,          # optional
         fallback_top_k=20 # optional
     )
-    
-    return lm, vocab, suggester
+    return suggester
 
 
 def spelling_errors(lm, vocab, suggester, paragraph: str) -> dict:
