@@ -1167,7 +1167,7 @@ def setup():
     print(len(vocab))
 
     suggester = make_unified_bert_suggester(
-        "bert_finance_continued_4",
+        "bert_finance_continued",
         candidate_vocab=vocab,
         tau=0,          # optional
         fallback_top_k=20 # optional
