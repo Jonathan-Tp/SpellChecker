@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 import re
@@ -105,9 +107,92 @@ def tokenize_paragraph(paragraph: str) -> list[str]:
 
     return ["<s>"] + inner + ["</s>"]
 
-# ----------------------------
-# Bigram LM
-# ----------------------------
+# # ----------------------------
+# # Bigram LM
+# # ----------------------------
+# class BigramLM:
+#     def __init__(self, k: float = 0.1) -> None:
+#         self.k = k
+#         self.unigram: Counter[str] = Counter()
+#         self.bigram: Counter[tuple[str, str]] = Counter()
+#         self.V: set[str] = set()
+#         self.V_size: int = 0
+
+#     @classmethod
+#     def from_json(
+#         cls,
+#         unigram_path: str | Path,
+#         bigram_path: str | Path,
+#         *,
+#         k: float = 0.1,
+#         bigram_delim: str = " ",
+#         lowercase_vocab: bool = True,
+#     ) -> "BigramLM":
+#         lm = cls(k=k)
+
+#         unigram_data = _read_json_dict(unigram_path)
+#         bigram_data = _read_json_dict(bigram_path)
+
+#         for w, c in unigram_data.items():
+#             w2 = w.lower() if lowercase_vocab else w
+#             lm.unigram[w2] += int(c)
+
+#         lm.V = {w for w in lm.unigram.keys() if w != "<s>"}
+
+#         for key, c in bigram_data.items():
+#             prev, w = _parse_bigram_key(key, delim=bigram_delim)
+#             if lowercase_vocab:
+#                 prev, w = prev.lower(), w.lower()
+
+#             lm.bigram[(prev, w)] += int(c)
+#             if w != "<s>":
+#                 lm.V.add(w)
+
+#         lm.V.add("</s>")
+#         lm.V.discard("<s>")
+#         lm.V_size = len(lm.V)
+#         return lm
+
+#     def prob(self, prev: str, w: str) -> float:
+#         num = self.bigram[(prev, w)] + self.k
+#         den = self.unigram[prev] + self.k * self.V_size
+#         return num / den if den > 0 else 1.0 / max(self.V_size, 1)
+
+#     def logprob(self, prev: str, w: str) -> float:
+#         return math.log(self.prob(prev, w))
+
+
+# # ----------------------------
+# # JSON / bigram helpers
+# # ----------------------------
+# def _read_json_dict(path: str | Path) -> dict:
+#     p = Path(path)
+#     with p.open("r", encoding="utf-8") as f:
+#         data = json.load(f)
+#     if not isinstance(data, dict):
+#         raise ValueError(
+#             f"{p} must contain a JSON object/dict, got {type(data).__name__}"
+#         )
+#     return data
+
+
+# def _parse_bigram_key(key: str, delim: str = " ") -> tuple[str, str]:
+#     if not isinstance(key, str):
+#         raise ValueError(f"Bigram key must be a string. Got: {type(key).__name__}")
+
+#     parts = key.rsplit(delim, 1) if delim == " " else key.split(delim, 1)
+#     if len(parts) != 2 or not parts[0] or not parts[1]:
+#         raise ValueError(
+#             f"Bigram key {key!r} did not split into 2 parts with delim={delim!r}"
+#         )
+#     return parts[0], parts[1]
+import json
+import math
+from collections import Counter
+from pathlib import Path
+from typing import Any
+
+
 class BigramLM:
     def __init__(self, k: float = 0.1) -> None:
         self.k = k
@@ -125,26 +210,92 @@ class BigramLM:
         k: float = 0.1,
         bigram_delim: str = " ",
         lowercase_vocab: bool = True,
+        bigram_format: str = "auto",  # "auto" | "flat" | "packed"
     ) -> "BigramLM":
         lm = cls(k=k)
 
         unigram_data = _read_json_dict(unigram_path)
         bigram_data = _read_json_dict(bigram_path)
 
+        # --- load unigrams ---
         for w, c in unigram_data.items():
+            if not isinstance(w, str):
+                continue
             w2 = w.lower() if lowercase_vocab else w
             lm.unigram[w2] += int(c)
 
         lm.V = {w for w in lm.unigram.keys() if w != "<s>"}
 
-        for key, c in bigram_data.items():
-            prev, w = _parse_bigram_key(key, delim=bigram_delim)
-            if lowercase_vocab:
-                prev, w = prev.lower(), w.lower()
+        # --- detect bigram format ---
+        if bigram_format not in {"auto", "flat", "packed"}:
+            raise ValueError("bigram_format must be one of: auto, flat, packed")
 
-            lm.bigram[(prev, w)] += int(c)
-            if w != "<s>":
-                lm.V.add(w)
+        is_packed = (
+            bigram_format == "packed"
+            or (
+                bigram_format == "auto"
+                and isinstance(bigram_data, dict)
+                and "vocab" in bigram_data
+                and "bigrams" in bigram_data
+            )
+        )
+
+        # --- load bigrams ---
+        if is_packed:
+            vocab = bigram_data.get("vocab")
+            triples = bigram_data.get("bigrams")
+
+            if not isinstance(vocab, list) or not isinstance(triples, list):
+                raise ValueError(
+                    "Packed bigram JSON must be like: "
+                    '{"vocab":[...], "bigrams":[[prev_id,next_id,count], ...]}'
+                )
+
+            # Normalize vocab (optional lowercasing)
+            if lowercase_vocab:
+                vocab_norm = []
+                for tok in vocab:
+                    if not isinstance(tok, str):
+                        raise ValueError("Packed vocab must be a list[str]")
+                    vocab_norm.append(tok.lower())
+                vocab = vocab_norm
+            else:
+                for tok in vocab:
+                    if not isinstance(tok, str):
+                        raise ValueError("Packed vocab must be a list[str]")
+
+            # triples: [[i,j,c], ...]
+            for t in triples:
+                if not (isinstance(t, list) and len(t) == 3):
+                    raise ValueError(f"Bad bigram triple entry: {t!r} (expected [i,j,c])")
+                i, j, c = int(t[0]), int(t[1]), int(t[2])
+
+                if i < 0 or i >= len(vocab) or j < 0 or j >= len(vocab):
+                    # skip or raise; raising is safer for debugging
+                    raise ValueError(f"Bigram id out of range: {(i, j)} with vocab_size={len(vocab)}")
+
+                prev = vocab[i]
+                w = vocab[j]
+
+                lm.bigram[(prev, w)] += c
+                if w != "<s>":
+                    lm.V.add(w)
+
+        else:
+            # flat dict: {"prev w": count, ...}
+            if not isinstance(bigram_data, dict):
+                raise ValueError(f"{Path(bigram_path)} must contain a JSON object/dict.")
+
+            for key, c in bigram_data.items():
+                if not isinstance(key, str):
+                    continue
+                prev, w = _parse_bigram_key(key, delim=bigram_delim)
+                if lowercase_vocab:
+                    prev, w = prev.lower(), w.lower()
+
+                lm.bigram[(prev, w)] += int(c)
+                if w != "<s>":
+                    lm.V.add(w)
 
         lm.V.add("</s>")
         lm.V.discard("<s>")
@@ -163,14 +314,12 @@ class BigramLM:
 # ----------------------------
 # JSON / bigram helpers
 # ----------------------------
-def _read_json_dict(path: str | Path) -> dict:
+def _read_json_dict(path: str | Path) -> dict[str, Any]:
     p = Path(path)
     with p.open("r", encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, dict):
-        raise ValueError(
-            f"{p} must contain a JSON object/dict, got {type(data).__name__}"
-        )
+        raise ValueError(f"{p} must contain a JSON object/dict, got {type(data).__name__}")
     return data
 
 
@@ -180,9 +329,7 @@ def _parse_bigram_key(key: str, delim: str = " ") -> tuple[str, str]:
 
     parts = key.rsplit(delim, 1) if delim == " " else key.split(delim, 1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise ValueError(
-            f"Bigram key {key!r} did not split into 2 parts with delim={delim!r}"
-        )
+        raise ValueError(f"Bigram key {key!r} did not split into 2 parts with delim={delim!r}")
     return parts[0], parts[1]
 
 
@@ -1323,6 +1470,7 @@ def setup():
     lm = BigramLM.from_json(
         unigram_path="unigrams.json",
         bigram_path="bigrams.json",
+        bigram_format="packed",
         k=0.1,
         lowercase_vocab=True,
     )
