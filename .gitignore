@@ -4,4 +4,3 @@ build_bigrams.json
 build_bigrams.py
 bert_finance_continued/
 upload_hugging.py
-bigrams.json
