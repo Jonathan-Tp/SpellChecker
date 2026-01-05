@@ -63,11 +63,7 @@ input_text = st.text_area(
 
 def run_analysis():
     if input_text.strip():
-        # lm, vocab, suggester = setup()
-        lm, vocab = spelling.setup1()
-        print("lm")
-        suggester = spelling.setup2()
-        print("suggester")
+        lm, vocab, suggester = setup()
         st.session_state.analysis_result = spelling.model(lm, vocab, suggester, paragraph=input_text, mode="c")
         st.session_state.last_input = input_text
 
@@ -150,7 +146,7 @@ else:
                 st.write("No suggestion generated.")
 
 @st.cache_data
-def load_word_list(path="unigram.json"):
+def load_word_list(path="unigrams.json"):
     with open(path, "r", encoding="utf-8") as f:
         word_freq = json.load(f)   # word_freq is a dict: {word: freq}
 
