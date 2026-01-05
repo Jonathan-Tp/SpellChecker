@@ -28,22 +28,79 @@ SUGGESTED_KEY = ("suggested", -3)
 # ----------------------------
 # NLTK setup
 # ----------------------------
+_NLTK_READY = False
+
 def ensure_nltk() -> None:
-    """Ensure required NLTK resources are available."""
-    nltk.download("punkt", quiet=True)
-    nltk.download("averaged_perceptron_tagger", quiet=True)
+    """Ensure required NLTK resources are available.
+
+    Streamlit Community Cloud (and other hosted envs) often ship without NLTK data.
+    Newer NLTK versions may require both `punkt` and `punkt_tab`.
+    We download to a writable directory and only do this once per process.
+    """
+    global _NLTK_READY
+    if _NLTK_READY:
+        return
+
+    # Pick a writable NLTK data dir (prefer repo-local cache under home, fallback to /tmp).
+    try:
+        base_dir = Path.home() / "nltk_data"
+        base_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        base_dir = Path("/tmp/nltk_data")
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure NLTK will search this directory first.
+    if str(base_dir) not in nltk.data.path:
+        nltk.data.path.insert(0, str(base_dir))
+
+    # Required tokenizers/taggers (cover both older and newer NLTK naming).
+    packages = [
+        "punkt",
+        "punkt_tab",  # needed by newer NLTK PunktTokenizer
+        "averaged_perceptron_tagger",
+        "averaged_perceptron_tagger_eng",
+    ]
+    for pkg in packages:
+        try:
+            nltk.download(pkg, download_dir=str(base_dir), quiet=True)
+        except Exception:
+            # If download fails (e.g., no network), we still mark ready; tokenization
+            # functions have fallbacks where possible, and NLTK may already have data.
+            pass
+
+    _NLTK_READY = True
 
 
 # ----------------------------
 # Tokenization
 # ----------------------------
 def tokenize_paragraph(paragraph: str) -> list[str]:
-    """Tokenize a paragraph with <s> ... </s> boundaries."""
+    """Tokenize a paragraph with <s> ... </s> boundaries.
+
+    Uses NLTK when available; falls back to a simple regex-based tokenizer if
+    required NLTK data cannot be loaded (common on hosted deployments).
+    """
     ensure_nltk()
+
+    def _fallback_sentences(text: str) -> list[str]:
+        # Split on sentence-ending punctuation or newlines.
+        parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
+        return [p for p in parts if p]
+
+    def _fallback_words(text: str) -> list[str]:
+        # Words, numbers, or single punctuation symbols.
+        return re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\w\s]", text)
+
     inner: list[str] = []
-    for sent in sent_tokenize(paragraph):
-        inner.extend(word_tokenize(sent))
+    try:
+        for sent in sent_tokenize(paragraph):
+            inner.extend(word_tokenize(sent))
+    except LookupError:
+        for sent in _fallback_sentences(paragraph):
+            inner.extend(_fallback_words(sent))
+
     return ["<s>"] + inner + ["</s>"]
+
 
 
 # ----------------------------
