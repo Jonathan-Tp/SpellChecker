@@ -301,6 +301,11 @@ except ImportError:
 if "last_ram_log" not in st.session_state:
     st.session_state.last_ram_log = 0.0
 
+def setup():
+    return spelling.setup()
+
+lm, vocab, suggester = setup()
+
 def log_ram_every(seconds: int = 30):
     if not psutil:
         return
@@ -421,7 +426,6 @@ input_text = st.text_area(
 
 def run_analysis():
     if input_text.strip():
-        lm, vocab, suggester = setup()
         st.session_state.analysis_result = spelling.model(lm, vocab, suggester, paragraph=input_text, mode="c")
         st.session_state.last_input = input_text
 
