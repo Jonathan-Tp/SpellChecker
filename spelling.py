@@ -1008,7 +1008,7 @@ def make_unified_bert_suggester(
         # If a backend isn't supported in this environment, just run on CPU.
         device = torch.device("cpu")
         model = model.to(device)
-MASK = tokenizer.mask_token
+    MASK = tokenizer.mask_token
     MASK_ID = tokenizer.mask_token_id
     if MASK is None or MASK_ID is None:
         raise ValueError(
