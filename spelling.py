@@ -59,6 +59,7 @@ def ensure_nltk() -> None:
         "punkt_tab",  # needed by newer NLTK PunktTokenizer
         "averaged_perceptron_tagger",
         "averaged_perceptron_tagger_eng",
+        "universal_tagset",
     ]
     for pkg in packages:
         try:
@@ -220,6 +221,11 @@ def words_within_edit_distance(token: str, vocab: set[str], x: int) -> list[str]
 # POS + context helpers
 # ----------------------------
 def candidate_pos_tag(prev: str, cand: str, nxt: str) -> str:
+    """Return a coarse (universal-ish) POS tag for `cand` using a small context window.
+
+    Uses NLTK's universal tagset when available; falls back to Penn tags plus a small
+    local mapping if the universal mapping data isn't installed (common on hosted envs).
+    """
     window: list[str] = []
     if prev not in {"<s>", "</s>"} and not is_punct_token(prev):
         window.append(prev)
@@ -227,7 +233,41 @@ def candidate_pos_tag(prev: str, cand: str, nxt: str) -> str:
     if nxt not in {"<s>", "</s>"} and not is_punct_token(nxt):
         window.append(nxt)
 
-    tagged = pos_tag(window, tagset="universal")
+    try:
+        tagged = pos_tag(window, tagset="universal")
+    except LookupError:
+        # Universal mapping data missing; fall back to Penn tags and map ourselves.
+        penn = pos_tag(window)
+
+        def _map_penn_to_universal(tag: str) -> str:
+            # Minimal, practical mapping (covers common PTB tags)
+            if tag.startswith("NN"):
+                return "NOUN"
+            if tag.startswith("VB") or tag in {"MD"}:
+                return "VERB"
+            if tag.startswith("JJ"):
+                return "ADJ"
+            if tag.startswith("RB") or tag in {"WRB"}:
+                return "ADV"
+            if tag in {"IN", "TO"}:
+                return "ADP"
+            if tag in {"DT", "WDT", "PDT"}:
+                return "DET"
+            if tag in {"PRP", "PRP$", "WP", "WP$"}:
+                return "PRON"
+            if tag in {"CC"}:
+                return "CONJ"
+            if tag in {"RP"}:
+                return "PRT"
+            if tag in {"CD"}:
+                return "NUM"
+            # Punctuation / symbols
+            if tag in {".", ",", ":", "``", "''", "-LRB-", "-RRB-", "#", "$"}:
+                return "PUNCT"
+            return "X"
+
+        tagged = [(tok, _map_penn_to_universal(t)) for tok, t in penn]
+
     for tok, tag in tagged:
         if tok == cand:
             return tag
