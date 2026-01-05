@@ -2,6 +2,8 @@ import json
 import math
 import re
 import string
+import platform
+
 from collections import Counter
 from pathlib import Path
 from typing import Iterable, Optional, Dict, Any, List, Tuple, Callable
@@ -30,18 +32,22 @@ SUGGESTED_KEY = ("suggested", -3)
 # ----------------------------
 _NLTK_READY = False
 
-def ensure_nltk() -> None:
+def ensure_nltk(force: bool = False) -> None:
     """Ensure required NLTK resources are available.
 
-    Streamlit Community Cloud (and other hosted envs) often ship without NLTK data.
-    Newer NLTK versions may require both `punkt` and `punkt_tab`.
-    We download to a writable directory and only do this once per process.
+    Hosted environments (e.g., Streamlit Community Cloud) frequently do not ship
+    with NLTK data. Newer NLTK versions may require `punkt_tab` in addition to
+    `punkt`. Universal POS tags may require `universal_tagset`.
+
+    We download into a writable directory and add it to `nltk.data.path`.
+    If downloads fail (e.g., no internet), callers should be prepared to fall
+    back to non-NLTK tokenization/tagging (see helpers below).
     """
     global _NLTK_READY
-    if _NLTK_READY:
+    if _NLTK_READY and not force:
         return
 
-    # Pick a writable NLTK data dir (prefer repo-local cache under home, fallback to /tmp).
+    # Choose a writable NLTK data directory
     try:
         base_dir = Path.home() / "nltk_data"
         base_dir.mkdir(parents=True, exist_ok=True)
@@ -49,28 +55,26 @@ def ensure_nltk() -> None:
         base_dir = Path("/tmp/nltk_data")
         base_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure NLTK will search this directory first.
     if str(base_dir) not in nltk.data.path:
         nltk.data.path.insert(0, str(base_dir))
 
-    # Required tokenizers/taggers (cover both older and newer NLTK naming).
+    # Try to fetch everything we might need in this project.
     packages = [
         "punkt",
-        "punkt_tab",  # needed by newer NLTK PunktTokenizer
+        "punkt_tab",  # required by newer PunktTokenizer
         "averaged_perceptron_tagger",
-        "averaged_perceptron_tagger_eng",
-        "universal_tagset",
+        "averaged_perceptron_tagger_eng",  # newer tagger name (safe to attempt)
+        "universal_tagset",  # universal tagset mapping
     ]
+
     for pkg in packages:
         try:
             nltk.download(pkg, download_dir=str(base_dir), quiet=True)
         except Exception:
-            # If download fails (e.g., no network), we still mark ready; tokenization
-            # functions have fallbacks where possible, and NLTK may already have data.
+            # No hard fail here; we have fallbacks for tokenization/tagging
             pass
 
     _NLTK_READY = True
-
 
 # ----------------------------
 # Tokenization
@@ -78,18 +82,17 @@ def ensure_nltk() -> None:
 def tokenize_paragraph(paragraph: str) -> list[str]:
     """Tokenize a paragraph with <s> ... </s> boundaries.
 
-    Uses NLTK when available; falls back to a simple regex-based tokenizer if
-    required NLTK data cannot be loaded (common on hosted deployments).
+    Uses NLTK when available; falls back to a small regex-based tokenizer if
+    required NLTK resources are unavailable (common on hosted deployments).
     """
     ensure_nltk()
 
     def _fallback_sentences(text: str) -> list[str]:
-        # Split on sentence-ending punctuation or newlines.
         parts = re.split(r"(?<=[.!?])\s+|\n+", text.strip())
         return [p for p in parts if p]
 
     def _fallback_words(text: str) -> list[str]:
-        # Words, numbers, or single punctuation symbols.
+        # words / contractions, numbers, or single non-space punctuation chars
         return re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+(?:\.\d+)?|[^\w\s]", text)
 
     inner: list[str] = []
@@ -101,8 +104,6 @@ def tokenize_paragraph(paragraph: str) -> list[str]:
             inner.extend(_fallback_words(sent))
 
     return ["<s>"] + inner + ["</s>"]
-
-
 
 # ----------------------------
 # Bigram LM
@@ -220,12 +221,95 @@ def words_within_edit_distance(token: str, vocab: set[str], x: int) -> list[str]
 # ----------------------------
 # POS + context helpers
 # ----------------------------
-def candidate_pos_tag(prev: str, cand: str, nxt: str) -> str:
-    """Return a coarse (universal-ish) POS tag for `cand` using a small context window.
 
-    Uses NLTK's universal tagset when available; falls back to Penn tags plus a small
-    local mapping if the universal mapping data isn't installed (common on hosted envs).
-    """
+_PTB_TO_UNIVERSAL_EXACT: dict[str, str] = {
+    # Conjunctions / determiners / adpositions / particles
+    "CC": "CONJ",
+    "DT": "DET",
+    "PDT": "DET",
+    "WDT": "DET",
+    "IN": "ADP",
+    "TO": "PRT",
+    "RP": "PRT",
+    # Pronouns
+    "PRP": "PRON",
+    "PRP$": "PRON",
+    "WP": "PRON",
+    "WP$": "PRON",
+    # Numbers
+    "CD": "NUM",
+}
+
+def _ptb_to_universal(tag: str) -> str:
+    """Best-effort PennTreebank -> Universal tag mapping without NLTK resources."""
+    if not tag:
+        return "X"
+
+    if tag in _PTB_TO_UNIVERSAL_EXACT:
+        return _PTB_TO_UNIVERSAL_EXACT[tag]
+
+    # Prefix-based mapping
+    if tag.startswith("NN"):
+        return "NOUN"
+    if tag.startswith("VB"):
+        return "VERB"
+    if tag.startswith("JJ"):
+        return "ADJ"
+    if tag.startswith("RB"):
+        return "ADV"
+
+    # Punctuation in PTB is often ., , , :, `` etc.
+    if tag in {".", ",", ":", "``", "''", "-LRB-", "-RRB-"}:
+        return "."
+
+    return "X"
+
+
+def _simple_universal(tok: str) -> str:
+    """Tiny rule-based universal tagger fallback (when NLTK isn't usable)."""
+    t = tok.strip()
+    if not t:
+        return "X"
+    if is_punct_token(t):
+        return "."
+    low = t.lower()
+    if low.isdigit():
+        return "NUM"
+    if low in {"a", "an", "the", "this", "that", "these", "those"}:
+        return "DET"
+    if low in {"and", "or", "but", "nor", "yet", "so"}:
+        return "CONJ"
+    if low in {"to"}:
+        return "PRT"
+    if low in {"in", "on", "at", "by", "for", "with", "from", "of", "as", "into", "over", "under", "between", "after", "before", "about"}:
+        return "ADP"
+    if low in {"i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them", "my", "your", "his", "its", "our", "their"}:
+        return "PRON"
+    if low.endswith("ly"):
+        return "ADV"
+    # Default to NOUN (works better than X for many downstream heuristics)
+    return "NOUN"
+
+
+def safe_pos_tag_universal(tokens: list[str]) -> list[tuple[str, str]]:
+    """Return (token, universal_tag) for tokens, with robust fallbacks."""
+    ensure_nltk()
+    # First try the normal universal tagset path.
+    try:
+        return pos_tag(tokens, tagset="universal")
+    except LookupError:
+        pass
+
+    # If universal mapping is missing, tag in PTB and map ourselves.
+    try:
+        ptb = pos_tag(tokens)  # defaults to Penn tags
+        return [(tok, _ptb_to_universal(tag)) for tok, tag in ptb]
+    except LookupError:
+        # If even the tagger is missing, fall back to rules.
+        return [(tok, _simple_universal(tok)) for tok in tokens]
+
+
+def candidate_pos_tag(prev: str, cand: str, nxt: str) -> str:
     window: list[str] = []
     if prev not in {"<s>", "</s>"} and not is_punct_token(prev):
         window.append(prev)
@@ -233,45 +317,11 @@ def candidate_pos_tag(prev: str, cand: str, nxt: str) -> str:
     if nxt not in {"<s>", "</s>"} and not is_punct_token(nxt):
         window.append(nxt)
 
-    try:
-        tagged = pos_tag(window, tagset="universal")
-    except LookupError:
-        # Universal mapping data missing; fall back to Penn tags and map ourselves.
-        penn = pos_tag(window)
-
-        def _map_penn_to_universal(tag: str) -> str:
-            # Minimal, practical mapping (covers common PTB tags)
-            if tag.startswith("NN"):
-                return "NOUN"
-            if tag.startswith("VB") or tag in {"MD"}:
-                return "VERB"
-            if tag.startswith("JJ"):
-                return "ADJ"
-            if tag.startswith("RB") or tag in {"WRB"}:
-                return "ADV"
-            if tag in {"IN", "TO"}:
-                return "ADP"
-            if tag in {"DT", "WDT", "PDT"}:
-                return "DET"
-            if tag in {"PRP", "PRP$", "WP", "WP$"}:
-                return "PRON"
-            if tag in {"CC"}:
-                return "CONJ"
-            if tag in {"RP"}:
-                return "PRT"
-            if tag in {"CD"}:
-                return "NUM"
-            # Punctuation / symbols
-            if tag in {".", ",", ":", "``", "''", "-LRB-", "-RRB-", "#", "$"}:
-                return "PUNCT"
-            return "X"
-
-        tagged = [(tok, _map_penn_to_universal(t)) for tok, t in penn]
-
+    tagged = safe_pos_tag_universal(window)
     for tok, tag in tagged:
         if tok == cand:
             return tag
-    return tagged[0][1]
+    return tagged[0][1] if tagged else "X"
 
 
 def is_punct_token(tok: str) -> bool:
@@ -931,17 +981,34 @@ def make_unified_bert_suggester(
     See your original docstring for behavior details.
     """
 
-    device = torch.device(
-        "mps" if torch.backends.mps.is_available()
-        else "cuda" if torch.cuda.is_available()
-        else "cpu"
-    )
+    # Streamlit Cloud (Linux/CPU) often can't use MPS; guard it by platform.
+    use_mps = (platform.system() == "Darwin" and hasattr(torch.backends, "mps") and torch.backends.mps.is_available())
+    use_cuda = torch.cuda.is_available()
+
+    device = torch.device("mps" if use_mps else "cuda" if use_cuda else "cpu")
 
     tokenizer = AutoTokenizer.from_pretrained(model_ref)
-    model = AutoModelForMaskedLM.from_pretrained(model_ref).to(device)
-    model.eval()
 
-    MASK = tokenizer.mask_token
+    # Be defensive: some HF loading paths can leave meta tensors if a load partially fails.
+    # Always load weights onto CPU first, then move, and fall back to CPU if device move isn't supported.
+    try:
+        model = AutoModelForMaskedLM.from_pretrained(
+            model_ref,
+            low_cpu_mem_usage=False,   # avoids meta-tensor init on some setups
+            device_map=None,
+        )
+    except TypeError:
+        # older transformers may not accept these kwargs
+        model = AutoModelForMaskedLM.from_pretrained(model_ref)
+
+    model.eval()
+    try:
+        model = model.to(device)
+    except NotImplementedError:
+        # If a backend isn't supported in this environment, just run on CPU.
+        device = torch.device("cpu")
+        model = model.to(device)
+MASK = tokenizer.mask_token
     MASK_ID = tokenizer.mask_token_id
     if MASK is None or MASK_ID is None:
         raise ValueError(

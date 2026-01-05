@@ -301,6 +301,7 @@ except ImportError:
 if "last_ram_log" not in st.session_state:
     st.session_state.last_ram_log = 0.0
 
+@st.cache_resource
 def setup():
     return spelling.setup()
 
