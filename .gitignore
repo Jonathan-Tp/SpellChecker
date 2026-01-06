@@ -4,3 +4,5 @@ build_bigrams.json
 build_bigrams.py
 bert_finance_continued/
 upload_hugging.py
+build_unigrams_for_packed_vocab.py
+spelling_refactored.py
