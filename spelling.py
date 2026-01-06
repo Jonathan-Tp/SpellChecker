@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+#Refactored
 """
 Refactored spell + context error pipeline.
 
