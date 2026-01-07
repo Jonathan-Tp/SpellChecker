@@ -11,9 +11,9 @@ import platform
 import re
 import string
 
-# =============================================================================
-# Constants / types
-# =============================================================================
+"""
+Constants / types
+"""
 
 PUNCT_CHARS = set(string.punctuation)
 _SPECIAL_MASK = "[MASK]"
@@ -30,9 +30,9 @@ SUGGESTED_KEY: Tuple[str, int] = ("suggested", -3)
 _ALPHA_RE = re.compile(r"^[A-Za-z]+$")
 
 
-# =============================================================================
-# Robust NLTK utilities (tokenization + POS)
-# =============================================================================
+"""
+Robust NLTK utilities (tokenization + POS)
+"""
 
 _NLTK_READY = False
 
@@ -133,9 +133,9 @@ def _pos_tag_universal_cached(tokens_tuple: Tuple[str, ...]) -> Tuple[Tuple[str,
 def safe_pos_tag_universal(tokens: Sequence[str]) -> List[Tuple[str, str]]:
     return list(_pos_tag_universal_cached(tuple(tokens)))
 
-# =============================================================================
-# Bigram LM
-# =============================================================================
+"""
+Bigram LM
+"""
 
 def _read_json_dict(path: str | Path) -> Dict[str, Any]:
     p = Path(path)
@@ -213,9 +213,9 @@ class BigramLM:
     def logprob(self, prev: str, w: str) -> float:
         return math.log(self.prob(prev, w))
 
-# =============================================================================
-# Edit distance (with optional cutoff) + vocab index
-# =============================================================================
+"""
+Edit distance (with optional cutoff) + vocab index
+"""
 
 def edit_distance(a: str, b: str, *, max_dist: Optional[int] = None) -> int:
     """Levenshtein distance; if max_dist is set, may early-exit returning >max_dist."""
@@ -288,9 +288,9 @@ class VocabIndex:
                         return out
         return out
 
-# =============================================================================
-# Non-word detection (typos)
-# =============================================================================
+"""
+Non-word detection (typos)
+"""
 
 def label_nonword_and_mask(
     paragraph: str,
@@ -346,9 +346,9 @@ def label_nonword_and_mask(
     return out
 
 
-# =============================================================================
-# Context labeling + masking
-# =============================================================================
+"""
+Context labeling + masking
+"""
 
 # Closed-class candidate pools (fast + deterministic)
 CLOSED_CLASS_CANDIDATES_BY_POS: Dict[str, Tuple[str, ...]] = {
@@ -523,9 +523,9 @@ def label_context_and_mask(
     return label_output
 
 
-# =============================================================================
-# BERT suggester
-# =============================================================================
+"""
+BERT suggester
+"""
 
 def make_unified_bert_suggester(
     model_ref: str,
@@ -773,9 +773,9 @@ def make_unified_bert_suggester(
     return update_with_bert
 
 
-# =============================================================================
-# Final export formatting + public pipeline
-# =============================================================================
+"""
+Final export formatting + public pipeline
+"""
 
 def format_label_output_for_export(label_output: LabelOutput) -> Dict[Any, Any]:
     """
@@ -930,14 +930,3 @@ def setup(
         fallback_top_k=bert_top_k,
     )
     return SpellChecker(lm=lm, vocab_index=vocab_index, suggester=suggester, tau_by_pos=tau_by_pos)
-
-sc = setup(
-        unigram_path="unigrams.json",
-        bigram_path="bigrams.json",
-        tau_by_pos_path="tau_by_pos.json",   # optional but recommended for mode="c"
-        bert_model_ref="JonathanChang/bert_finance_continued",
-        bert_tau=0.0,
-        bert_top_k=20,
-    )
-
-print(sc.model("I have an idet. I want to makes a lot of monei with it.", mode="c"))

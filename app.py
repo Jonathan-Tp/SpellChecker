@@ -334,7 +334,6 @@ else:
     st.info("Type a keyword above to search the dictionary.")
 
 # Description
-
 st.markdown("---")
 st.subheader("📖 How to Use")
 
