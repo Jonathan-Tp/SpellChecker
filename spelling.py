@@ -110,7 +110,6 @@ def tokenize_paragraph(paragraph: str) -> List[str]:
 def is_punct_token(tok: str) -> bool:
     return bool(tok) and all(ch in PUNCT_CHARS for ch in tok)
 
-@lru_cache(maxsize=10_000)
 def _pos_tag_universal_cached(tokens_tuple: Tuple[str, ...]) -> Tuple[Tuple[str, str], ...]:
     """POS-tag tokens using NLTK's universal tagset.
 
@@ -835,18 +834,18 @@ class SpellChecker:
 
     def spelling_only(self, paragraph: str) -> Dict[Any, Any]:
         labeled = label_nonword_and_mask(paragraph, self.vocab_index)
-        print("spelling")
-        print(labeled)
+        # print("spelling")
+        # print(labeled)
         labeled = self.suggester(labeled, error_types=("n",))
-        print(labeled)
+        # print(labeled)
         return format_label_output_for_export(labeled)
 
     def with_context(self, paragraph: str) -> Dict[Any, Any]:
         labeled = label_nonword_and_mask(paragraph, self.vocab_index)
-        print("spelling")
-        print(labeled)
+        # print("spelling")
+        # print(labeled)
         labeled = self.suggester(labeled, error_types=("n",))
-        print(labeled)
+        # print(labeled)
         labeled = label_context_and_mask(
             labeled,
             self.lm,
@@ -856,10 +855,10 @@ class SpellChecker:
             tau_by_pos=self.tau_by_pos,
             filter_candidates_by_pos=False,
         )
-        print("context")
-        print(labeled)
+        # print("context")
+        # print(labeled)
         labeled = self.suggester(labeled, error_types=("c",))
-        print(labeled)
+        # print(labeled)
         return format_label_output_for_export(labeled)
 
     def model(self, paragraph: str, mode: str = "c") -> Dict[Any, Any]:
@@ -930,3 +929,14 @@ def setup(
         fallback_top_k=bert_top_k,
     )
     return SpellChecker(lm=lm, vocab_index=vocab_index, suggester=suggester, tau_by_pos=tau_by_pos)
+
+sc = setup(
+        unigram_path="unigrams.json",
+        bigram_path="bigrams.json",
+        tau_by_pos_path="tau_by_pos.json",   # optional but recommended for mode="c"
+        bert_model_ref="JonathanChang/bert_finance_continued",
+        bert_tau=0.0,
+        bert_top_k=20,
+    )
+
+print(sc.model("I have an idet. I want to makes a lot of monei with it.", mode="c"))

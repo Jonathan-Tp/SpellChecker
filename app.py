@@ -4,7 +4,6 @@ import spelling
 import re
 import json
 import os
-import traceback
 
 import os, time
 import streamlit as st
@@ -29,7 +28,6 @@ def setup():
     )
 
 sc = setup()
-
 
 def log_ram_every(seconds: int = 30):
     if not psutil:
@@ -92,19 +90,6 @@ def format_suggestions(suggestions, *, with_ed: bool):
             deduped.append(s)
     return deduped
 
-
-# This is to avoid streamlit always rerun
-@st.cache_resource
-def setup():
-    return spelling.setup()
-
-# try:
-#     lm, vocab, suggester = setup()
-# except Exception as e:
-#     st.error("❌ setup() crashed. Full traceback below:")
-#     st.code(traceback.format_exc())
-#     st.stop()
-
 log_ram_every(10)
 
 if "analysis_result" not in st.session_state:
@@ -121,50 +106,37 @@ st.set_page_config(
     layout="centered")
 
 # Settings
-
 st.sidebar.title("⚙ Settings")
-
 check_spelling = st.sidebar.checkbox("Check Spelling", value=True)
 check_grammar = st.sidebar.checkbox("Check Grammar", value=True)
 show_suggestions = st.sidebar.checkbox("Show Suggestions", value=True)
 highlight_errors = st.sidebar.checkbox("Highlight Errors", value=True)
 
 # Header
-
 st.title("📝 Spell & Grammar Checker")
 st.caption("Spelling and Grammar Correction System")
-
 st.markdown("---")
 
 # Input
-
 st.subheader("Input Text")
-
 input_text = st.text_area(
     "Enter your text below (max 500 characters):",
     height=180,
     max_chars=500,
     placeholder="Type or paste your text here...")
 
-
-# Button, use to insert input 
-
+# Button, use to insert input
 def run_analysis():
     if input_text.strip():
         st.session_state.analysis_result = sc.model(input_text, mode="c")
         st.session_state.last_input = input_text
-
-
 st.button("🔍 Check Text", on_click=run_analysis)
 
-
 # Results part
-
 st.markdown("---")
 st.subheader("Results")
 
 result = st.session_state.analysis_result
-
 if not result:
     st.info("Click **Check Text** to analyze your input.")
 else:
@@ -258,20 +230,50 @@ if highlight_errors and result:
         for word, idx, suggestions in token_items:
             st.markdown(f"**Word:** `{word}`")
 
-            option_labels = ["(keep original)"] + format_suggestions(suggestions, with_ed=False)
+            # Build candidate list (dedup, preserve order)
+            cands = []
+            seen = set()
+            for cand, _ in _iter_suggestion_pairs(suggestions):
+                cand_s = str(cand)
+                if cand_s not in seen:
+                    seen.add(cand_s)
+                    cands.append(cand_s)
+
+            # Precompute edit distance for display
+            ed_map = {}
+            for c in cands:
+                try:
+                    ed_map[c] = spelling.edit_distance(str(word), c)
+                except Exception:
+                    ed_map[c] = None
+
+            # Use a sentinel (None) for "keep original" so selected value is clean
+            # Sort candidates by edit distance (ascending); unknown ED goes last; tie-break by word
+            cands.sort(key=lambda c: (ed_map[c] is None, ed_map[c] if ed_map[c] is not None else 10**9, c))
+
+            options = [None] + cands
 
             selected = st.radio(
                 label=f"Choose replacement for '{word}'",
-                options=option_labels,
+                options=options,
                 key=f"choice_{idx}",
-                horizontal=True
+                horizontal=True,  # keep if you want; set False if labels get clipped
+                format_func=lambda x: "(keep original)" if x is None
+                    else (f"{x} ({ed_map[x]})" if ed_map[x] is not None else f"{x} ()")
             )
 
-            if selected != "(keep original)":
-                chosen_word = selected.split(" (")[0]
-                st.session_state.chosen_replacements[idx] = chosen_word
-            else:
+            if selected is None:
                 st.session_state.chosen_replacements.pop(idx, None)
+            else:
+                st.session_state.chosen_replacements[idx] = selected
+
+
+
+            # if selected != "(keep original)":
+            #     chosen_word = selected.split(" (")[0]
+            #     st.session_state.chosen_replacements[idx] = chosen_word
+            # else:
+            #     st.session_state.chosen_replacements.pop(idx, None)
 
             st.markdown("---")
 
