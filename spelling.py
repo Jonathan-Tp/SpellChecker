@@ -1,16 +1,4 @@
 from __future__ import annotations
-#Refactored version
-"""
-Refactored spell + context error pipeline.
-
-Goals:
-- Keep the *final* `model(...)` output format identical to the original.
-- Remove duplicated imports / debug prints.
-- Fix correctness issues in context candidate selection.
-- Improve efficiency: reuse precomputed vocab forms, cache POS tagging, avoid rebuilding constants in loops.
-- Keep dependencies optional: NLTK / torch / transformers are imported lazily.
-"""
-
 from dataclasses import dataclass
 from collections import Counter
 from functools import lru_cache
@@ -47,7 +35,6 @@ _ALPHA_RE = re.compile(r"^[A-Za-z]+$")
 # =============================================================================
 
 _NLTK_READY = False
-
 
 def _try_import_nltk():
     try:
@@ -98,19 +85,6 @@ def ensure_nltk(*, force: bool = False) -> None:
 
     _NLTK_READY = True
 
-
-_FALLBACK_WORD_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|\d+|[^\w\s]", re.UNICODE)
-
-
-def _fallback_sentences(text: str) -> List[str]:
-    parts = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [p for p in parts if p]
-
-
-def _fallback_words(sent: str) -> List[str]:
-    return _FALLBACK_WORD_RE.findall(sent)
-
-
 def tokenize_paragraph(paragraph: str) -> List[str]:
     """Tokenize paragraph into ['<s>', ...tokens..., '</s>'] with graceful fallbacks."""
     paragraph = paragraph or ""
@@ -133,152 +107,31 @@ def tokenize_paragraph(paragraph: str) -> List[str]:
         except Exception:
             pass
 
-    tokens2: List[str] = []
-    for sent in _fallback_sentences(paragraph):
-        tokens2.extend(_fallback_words(sent))
-    return ["<s>"] + tokens2 + ["</s>"]
-
-
-# Penn Treebank -> Universal mapping (best-effort)
-_PTB_TO_UNIVERSAL_EXACT: Dict[str, str] = {
-    # Nouns
-    "NN": "NOUN",
-    "NNS": "NOUN",
-    "NNP": "NOUN",
-    "NNPS": "NOUN",
-    # Verbs
-    "VB": "VERB",
-    "VBD": "VERB",
-    "VBG": "VERB",
-    "VBN": "VERB",
-    "VBP": "VERB",
-    "VBZ": "VERB",
-    # Adjectives
-    "JJ": "ADJ",
-    "JJR": "ADJ",
-    "JJS": "ADJ",
-    # Adverbs
-    "RB": "ADV",
-    "RBR": "ADV",
-    "RBS": "ADV",
-    # Determiners
-    "DT": "DET",
-    "PDT": "DET",
-    "WDT": "DET",
-    # Conjunctions
-    "CC": "CONJ",
-    # Prepositions / particles
-    "IN": "ADP",
-    "TO": "PRT",
-    "RP": "PRT",
-    # Pronouns
-    "PRP": "PRON",
-    "PRP$": "PRON",
-    "WP": "PRON",
-    "WP$": "PRON",
-    # Numbers
-    "CD": "NUM",
-}
-
-
-def _ptb_to_universal(tag: str) -> str:
-    if not tag:
-        return "X"
-    if tag in _PTB_TO_UNIVERSAL_EXACT:
-        return _PTB_TO_UNIVERSAL_EXACT[tag]
-    if tag.startswith("NN"):
-        return "NOUN"
-    if tag.startswith("VB"):
-        return "VERB"
-    if tag.startswith("JJ"):
-        return "ADJ"
-    if tag.startswith("RB"):
-        return "ADV"
-    return "X"
-
-
 def is_punct_token(tok: str) -> bool:
     return bool(tok) and all(ch in PUNCT_CHARS for ch in tok)
 
-
-def _simple_universal(tok: str) -> str:
-    """Tiny heuristic POS fallback."""
-    t = (tok or "").strip()
-    if not t:
-        return "X"
-    if is_punct_token(t):
-        return "."
-    low = t.lower()
-    if low.isdigit():
-        return "NUM"
-    if low in {"a", "an", "the", "this", "that", "these", "those"}:
-        return "DET"
-    if low in {"and", "or", "but", "nor", "yet", "so"}:
-        return "CONJ"
-    if low == "to":
-        return "PRT"
-    if low in {
-        "in", "on", "at", "by", "for", "with", "from", "of", "into", "over", "under",
-        "between", "after", "before", "about",
-    }:
-        return "ADP"
-    if low in {
-        "i", "you", "he", "she", "it", "we", "they",
-        "me", "him", "her", "us", "them",
-        "my", "your", "his", "its", "our", "their",
-        "myself", "yourself", "himself", "herself", "itself", "ourselves", "themselves",
-    }:
-        return "PRON"
-    if low.endswith("ly"):
-        return "ADV"
-    return "NOUN"
-
-
-@lru_cache(maxsize=50_000)
+@lru_cache(maxsize=10_000)
 def _pos_tag_universal_cached(tokens_tuple: Tuple[str, ...]) -> Tuple[Tuple[str, str], ...]:
+    """POS-tag tokens using NLTK's universal tagset.
+
+    Tag the whole sequence once (and cache it) for speed.
+    """
     tokens = list(tokens_tuple)
 
-    ensure_nltk()
     imported = _try_import_nltk()
-    if imported is not None:
-        _, pos_tag, _, _, _ = imported
-        try:
-            return tuple(pos_tag(tokens, tagset="universal"))
-        except LookupError:
-            pass
-        except Exception:
-            pass
-        try:
-            ptb = pos_tag(tokens)
-            return tuple((tok, _ptb_to_universal(tag)) for tok, tag in ptb)
-        except LookupError:
-            pass
-        except Exception:
-            pass
+    if imported is None:
+        raise ImportError("NLTK is not installed. `pip install nltk`")
 
-    return tuple((tok, _simple_universal(tok)) for tok in tokens)
+    _, pos_tag, _, _, _ = imported
+
+    # Ensure required resources exist.
+    ensure_nltk()
+
+    return tuple(pos_tag(tokens, tagset="universal"))
 
 
 def safe_pos_tag_universal(tokens: Sequence[str]) -> List[Tuple[str, str]]:
     return list(_pos_tag_universal_cached(tuple(tokens)))
-
-
-@lru_cache(maxsize=200_000)
-def candidate_pos_tag(prev: str, cand: str, nxt: str) -> str:
-    """POS tag for cand, using a tiny context window when available."""
-    window: List[str] = []
-    if prev not in {"<s>", "</s>"} and not is_punct_token(prev):
-        window.append(prev)
-    window.append(cand)
-    if nxt not in {"<s>", "</s>"} and not is_punct_token(nxt):
-        window.append(nxt)
-
-    tagged = safe_pos_tag_universal(window)
-    for tok, tag in tagged:
-        if tok == cand:
-            return tag
-    return tagged[0][1] if tagged else "X"
-
 
 # =============================================================================
 # Bigram LM
@@ -291,14 +144,6 @@ def _read_json_dict(path: str | Path) -> Dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"{p} must contain a JSON object/dict.")
     return data
-
-
-def _parse_bigram_key(key: str, delim: str) -> Tuple[str, str]:
-    parts = key.split(delim)
-    if len(parts) != 2:
-        raise ValueError(f"Bigram key {key!r} did not split into 2 parts with delim={delim!r}")
-    return parts[0], parts[1]
-
 
 class BigramLM:
     def __init__(self, k: float = 0.1) -> None:
@@ -315,9 +160,7 @@ class BigramLM:
         bigram_path: str | Path,
         *,
         k: float = 0.1,
-        bigram_delim: str = " ",
         lowercase_vocab: bool = True,
-        bigram_format: str = "auto",  # "auto" | "flat" | "packed"
     ) -> "BigramLM":
         lm = cls(k=k)
 
@@ -332,65 +175,32 @@ class BigramLM:
 
         lm.V = {w for w in lm.unigram.keys() if w != "<s>"}
 
-        if bigram_format not in {"auto", "flat", "packed"}:
-            raise ValueError("bigram_format must be one of: auto, flat, packed")
+        vocab = bigram_data.get("vocab")
+        triples = bigram_data.get("bigrams")
 
-        is_packed = (
-            bigram_format == "packed"
-            or (
-                bigram_format == "auto"
-                and isinstance(bigram_data, dict)
-                and "vocab" in bigram_data
-                and "bigrams" in bigram_data
-            )
-        )
-
-        if is_packed:
-            vocab = bigram_data.get("vocab")
-            triples = bigram_data.get("bigrams")
-            if not isinstance(vocab, list) or not isinstance(triples, list):
-                raise ValueError(
-                    'Packed bigram JSON must be like: {"vocab":[...], "bigrams":[[prev_id,next_id,count], ...]}'
-                )
-
-            if lowercase_vocab:
-                vocab2: List[str] = []
-                for tok in vocab:
-                    if not isinstance(tok, str):
-                        raise ValueError("Packed vocab must be a list[str]")
-                    vocab2.append(tok.lower())
-                vocab = vocab2
-            else:
-                for tok in vocab:
-                    if not isinstance(tok, str):
-                        raise ValueError("Packed vocab must be a list[str]")
-
-            for t in triples:
-                if not (isinstance(t, list) and len(t) == 3):
-                    raise ValueError("Packed bigrams must be a list of [i,j,c] triples")
-                i, j, c = t
-                if not (isinstance(i, int) and isinstance(j, int)):
-                    raise ValueError("Packed bigram ids must be ints")
-                if not isinstance(c, (int, float)):
-                    raise ValueError("Packed bigram counts must be numeric")
-                if i < 0 or j < 0 or i >= len(vocab) or j >= len(vocab):
-                    raise ValueError(f"Bigram id out of range: {(i, j)} with vocab_size={len(vocab)}")
-                prev = vocab[i]
-                w = vocab[j]
-                lm.bigram[(prev, w)] += int(c)
-                if w != "<s>":
-                    lm.V.add(w)
+        if lowercase_vocab:
+            vocab2: List[str] = []
+            for tok in vocab:
+                if not isinstance(tok, str):
+                    raise ValueError("Packed vocab must be a list[str]")
+                vocab2.append(tok.lower())
+            vocab = vocab2
         else:
-            for key, c in bigram_data.items():
-                if not isinstance(key, str):
-                    continue
-                prev, w = _parse_bigram_key(key, bigram_delim)
-                if lowercase_vocab:
-                    prev = prev.lower()
-                    w = w.lower()
-                lm.bigram[(prev, w)] += int(c)
-                if w != "<s>":
-                    lm.V.add(w)
+            for tok in vocab:
+                if not isinstance(tok, str):
+                    raise ValueError("Packed vocab must be a list[str]")
+
+        for t in triples:
+            if not (isinstance(t, list) and len(t) == 3):
+                raise ValueError("Packed bigrams must be a list of [i,j,c] triples")
+            i, j, c = t
+            if i < 0 or j < 0 or i >= len(vocab) or j >= len(vocab):
+                raise ValueError(f"Bigram id out of range: {(i, j)} with vocab_size={len(vocab)}")
+            prev = vocab[i]
+            w = vocab[j]
+            lm.bigram[(prev, w)] += int(c)
+            if w != "<s>":
+                lm.V.add(w)
 
         lm.V_size = len(lm.V)
         return lm
@@ -402,7 +212,6 @@ class BigramLM:
 
     def logprob(self, prev: str, w: str) -> float:
         return math.log(self.prob(prev, w))
-
 
 # =============================================================================
 # Edit distance (with optional cutoff) + vocab index
@@ -479,7 +288,6 @@ class VocabIndex:
                         return out
         return out
 
-
 # =============================================================================
 # Non-word detection (typos)
 # =============================================================================
@@ -518,11 +326,13 @@ def label_nonword_and_mask(
         wrong = bool(is_alpha and vocab_index.is_oov_alpha(word))
 
         if wrong:
-            cand = vocab_index.within_edit_distance(word, ed_thresh, max_candidates=max_suggestions * 4)
-            # Sort by (distance, lexicographic) then truncate
-            cand.sort(key=lambda w: (edit_distance(word.lower(), w.lower()), w.lower()))
-            cand = cand[:max_suggestions]
-            info = {"e": "n", "suggestions": cand}
+            # cand = vocab_index.within_edit_distance(word, ed_thresh, max_candidates=max_suggestions * 4)
+            # # Sort by (distance, lexicographic) then truncate
+            # cand.sort(key=lambda w: (edit_distance(word.lower(), w.lower()), w.lower()))
+            # cand = cand[:max_suggestions]
+            # # info = {"e": "n", "suggestions": cand}
+            info = {"e": "n"}
+
 
         out[(word, idx)] = info
 
@@ -572,6 +382,7 @@ def out_of_context_by_bigram_pos(
     word: str,
     nxt: str,
     candidates: Iterable[str],
+    cur_pos: Optional[str] = None,
     tau_default: float = 2.0,
     tau_by_pos: Optional[Dict[str, float]] = None,
 ) -> bool:
@@ -585,7 +396,8 @@ def out_of_context_by_bigram_pos(
     word_l = word.lower()
     nxt_l = (nxt or "</s>").lower()
 
-    cur_pos = candidate_pos_tag(prev_l, word_l, nxt_l)
+    if cur_pos is None:
+        cur_pos = safe_pos_tag_universal([word_l])[0][1]
     tau = float(tau_by_pos.get(cur_pos, tau_default))
 
     orig_score = context_score(lm, prev_l, word_l, nxt_l)
@@ -641,6 +453,9 @@ def label_context_and_mask(
 
     base_tokens_lc = [(item["rep_tok"] or "").lower() for item in token_items]
     toks = ["<s>"] + base_tokens_lc + ["</s>"]
+    tokens_for_pos = [t if t else "<EMPTY>" for t in base_tokens_lc]
+    pos_tags = [tag for _, tag in safe_pos_tag_universal(tokens_for_pos)]
+
 
     # Decide context errors
     for pos, item in enumerate(token_items):
@@ -655,7 +470,7 @@ def label_context_and_mask(
         word = toks[pos + 1]
         nxt = toks[pos + 2]
 
-        pos_tag = candidate_pos_tag(prev, word, nxt)
+        pos_tag = pos_tags[pos]
 
         fixed = CLOSED_CLASS_CANDIDATES_BY_POS.get(pos_tag)
         cand_list: List[str] = []
@@ -667,7 +482,7 @@ def label_context_and_mask(
             if filter_candidates_by_pos:
                 filtered: List[str] = []
                 for cand in cand_list:
-                    if candidate_pos_tag(prev, cand.lower(), nxt) == pos_tag:
+                    if safe_pos_tag_universal([cand.lower()])[0][1] == pos_tag:
                         filtered.append(cand)
                 cand_list = filtered
 
@@ -681,6 +496,7 @@ def label_context_and_mask(
             word=word,
             nxt=nxt,
             candidates=cand_set,
+            cur_pos=pos_tag,
             tau_default=tau_default,
             tau_by_pos=tau_by_pos,
         )
@@ -716,7 +532,7 @@ def make_unified_bert_suggester(
     *,
     candidate_vocab: Optional[Iterable[str]] = None,
     tau: float = 0.0,
-    fallback_top_k: int = 30,
+    fallback_top_k: int = 30
 ) -> Callable[[LabelOutput], LabelOutput]:
     """
     Unified masked-LM suggester.
@@ -774,7 +590,10 @@ def make_unified_bert_suggester(
                 vocab_token_ids[str(w)] = tid
 
     @torch.inference_mode()
-    def update_with_bert(label_output: LabelOutput) -> LabelOutput:
+    def update_with_bert(
+        label_output: LabelOutput, 
+        error_types: tuple[str, ...] | None = None,  # None = auto/backward-compat) -> LabelOutput:
+    ) -> LabelOutput:
         if SPECIAL_MASKED_KEY not in label_output:
             raise ValueError(f"label_output missing SPECIAL_MASKED_KEY={SPECIAL_MASKED_KEY}")
 
@@ -790,37 +609,66 @@ def make_unified_bert_suggester(
 
         mask_pos_list = _mask_positions(input_ids[0])
 
-        # Collect keys that correspond to errors (have 'e' field), sorted by idx.
-        error_entries: List[Tuple[int, TokenKey]] = []
+        # Collect ALL error keys (have 'e' field), sorted by idx.
+        error_entries_all: List[Tuple[int, TokenKey]] = []
         for k, info in label_output.items():
             if k == SPECIAL_MASKED_KEY:
                 continue
             if not (isinstance(k, tuple) and len(k) == 2):
                 continue
             if isinstance(info, dict) and info.get("e") in {"n", "c"}:
-                error_entries.append((int(k[1]), k))
-        error_entries.sort(key=lambda x: x[0])
+                error_entries_all.append((int(k[1]), k))
+        error_entries_all.sort(key=lambda x: x[0])
+
+        # If caller specifies which errors to handle, FILTER here.
+        if error_types is not None:
+            allowed = set(error_types)
+            error_entries = [(i, k) for (i, k) in error_entries_all
+                             if isinstance(label_output.get(k), dict)
+                             and label_output[k].get("e") in allowed]
+        else:
+            error_entries = error_entries_all
+
         label_keys = [k for _, k in error_entries]
 
-        # If mismatch, fall back to "type with matching count" heuristic (kept from original behavior).
+        # If mismatch:
         if len(label_keys) != len(mask_pos_list):
-            by_type: Dict[str, List[Tuple[int, TokenKey]]] = {}
-            for idx, k in error_entries:
-                err_type = str(label_output[k]["e"])
-                by_type.setdefault(err_type, []).append((idx, k))
-            chosen: Optional[List[Tuple[int, TokenKey]]] = None
-            for g in by_type.values():
-                if len(g) == len(mask_pos_list):
+            if error_types is not None:
+                # When explicitly requested, mismatch means your masking step is inconsistent.
+                raise ValueError(
+                    "Mismatch between [MASK] tokens and selected error entries.\n"
+                    f"selected error_types={error_types}\n"
+                    f"found {len(mask_pos_list)} [MASK] but selected {len(label_keys)} error entries.\n"
+                    f"masked_text: {masked_text}"
+                )
+
+            # Backward-compat "auto": pick a group whose count matches masks.
+            # IMPORTANT: prefer context ('c') over nonword ('n').
+            by_type: dict[str, List[Tuple[int, TokenKey]]] = {"c": [], "n": []}
+            for idx, k in error_entries_all:
+                info = label_output.get(k)
+                if isinstance(info, dict):
+                    t = str(info.get("e"))
+                    if t in by_type:
+                        by_type[t].append((idx, k))
+
+            chosen = None
+            for t in ("c", "n"):  # <-- fixes your current bug
+                g = by_type.get(t)
+                if g and len(g) == len(mask_pos_list):
                     chosen = g
                     break
+
             if chosen is None:
                 raise ValueError(
                     "Mismatch between [MASK] tokens and error entries.\n"
-                    f"found {len(mask_pos_list)} [MASK] in masked text but error entries are {len(error_entries)}.\n"
+                    f"found {len(mask_pos_list)} [MASK] but have {len(error_entries_all)} error entries.\n"
                     f"masked_text: {masked_text}"
                 )
+
             chosen.sort(key=lambda x: x[0])
             label_keys = [k for _, k in chosen]
+
 
         for pos, key in zip(mask_pos_list, label_keys):
             info = label_output.get(key)
@@ -854,10 +702,25 @@ def make_unified_bert_suggester(
                     candidates.append((float(logprobs[int(tid)].item()), w, int(tid)))
 
             # sort by edit distance, then prob
-            suggestions = [w for _, w, _ in sorted(
-                candidates,
-                key=lambda t: (edit_distance(orig_tok.lower(), t[1].lower()), -t[0], t[1].lower()),
-            )]
+            orig_lc = orig_tok.lower()
+            lam = 3.0  # start here (lower -> trust BERT more, higher -> trust spelling more)
+
+            def rank_key(t):
+                lp, w, _ = t
+                w_lc = w.lower()
+
+                # edit distance (use max_dist for speed; set to None if you want exact)
+                d = edit_distance(orig_lc, w_lc, max_dist=3)
+
+                # normalized distance in [0, 1, ...] (roughly)
+                d_norm = d / max(len(orig_lc), len(w_lc), 1)
+
+                combined = lp - lam * d_norm  # higher is better
+                # Python sorts ascending, so negate combined to get descending
+                return (-combined, -lp, w_lc)
+
+            suggestions = [w for _, w, _ in sorted(candidates, key=rank_key)]
+
 
             # Commit token with tau margin vs original token.
             commit_token = suggestions[0] if suggestions else orig_tok
@@ -972,12 +835,18 @@ class SpellChecker:
 
     def spelling_only(self, paragraph: str) -> Dict[Any, Any]:
         labeled = label_nonword_and_mask(paragraph, self.vocab_index)
-        labeled = self.suggester(labeled)
+        print("spelling")
+        print(labeled)
+        labeled = self.suggester(labeled, error_types=("n",))
+        print(labeled)
         return format_label_output_for_export(labeled)
 
     def with_context(self, paragraph: str) -> Dict[Any, Any]:
         labeled = label_nonword_and_mask(paragraph, self.vocab_index)
-        labeled = self.suggester(labeled)
+        print("spelling")
+        print(labeled)
+        labeled = self.suggester(labeled, error_types=("n",))
+        print(labeled)
         labeled = label_context_and_mask(
             labeled,
             self.lm,
@@ -987,7 +856,10 @@ class SpellChecker:
             tau_by_pos=self.tau_by_pos,
             filter_candidates_by_pos=False,
         )
-        labeled = self.suggester(labeled)
+        print("context")
+        print(labeled)
+        labeled = self.suggester(labeled, error_types=("c",))
+        print(labeled)
         return format_label_output_for_export(labeled)
 
     def model(self, paragraph: str, mode: str = "c") -> Dict[Any, Any]:
@@ -1026,7 +898,6 @@ def setup(
     *,
     unigram_path: str | Path = "unigrams.json",
     bigram_path: str | Path = "bigrams.json",
-    bigram_format: str = "packed",
     lm_k: float = 0.1,
     lowercase_vocab: bool = True,
     bert_model_ref: str = "JonathanChang/bert_finance_continued",
@@ -1043,7 +914,6 @@ def setup(
     lm = BigramLM.from_json(
         unigram_path=unigram_path,
         bigram_path=bigram_path,
-        bigram_format=bigram_format,
         k=lm_k,
         lowercase_vocab=lowercase_vocab,
     )
@@ -1061,48 +931,13 @@ def setup(
     )
     return SpellChecker(lm=lm, vocab_index=vocab_index, suggester=suggester, tau_by_pos=tau_by_pos)
 
-
-def spelling_errors(lm, vocab, suggester, paragraph: str) -> dict:
-    # Compatibility: expect vocab as set[str]; build index once.
-    vocab_index = VocabIndex.build(vocab)
-    labeled = label_nonword_and_mask(paragraph, vocab_index)
-    labeled = suggester(labeled)
-    return format_label_output_for_export(labeled)
-
-
-def context_errors(lm, vocab, suggester, paragraph: str) -> dict:
-    """Compatibility wrapper for the original `context_errors` function.
-
-    The original implementation loaded `tau_by_pos.json` from the current working
-    directory. We preserve that behavior when the file exists, otherwise fall
-    back to default tau only.
-    """
-    vocab_index = VocabIndex.build(vocab)
-
-    labeled = label_nonword_and_mask(paragraph, vocab_index)
-    labeled = suggester(labeled)
-
-    tau_by_pos = None
-    try:
-        p = Path("tau_by_pos.json")
-        if p.exists():
-            with p.open("r", encoding="utf-8") as f:
-                tau_by_pos = json.load(f)
-    except Exception:
-        tau_by_pos = None
-
-    labeled = label_context_and_mask(
-        labeled,
-        lm,
-        vocab_index,
-        cand_x=2,
-        tau_default=2.0,
-        tau_by_pos=tau_by_pos,
-        filter_candidates_by_pos=False,
+sc = setup(
+        unigram_path="unigrams.json",
+        bigram_path="bigrams.json",
+        tau_by_pos_path="tau_by_pos.json",   # optional but recommended for mode="c"
+        bert_model_ref="JonathanChang/bert_finance_continued",
+        bert_tau=0.0,
+        bert_top_k=20,
     )
-    labeled = suggester(labeled)
-    return format_label_output_for_export(labeled)
 
-
-def model(lm, vocab, suggester, paragraph: str, mode: str = "c") -> dict:
-    return spelling_errors(lm, vocab, suggester, paragraph) if mode == "n" else context_errors(lm, vocab, suggester, paragraph)
+print(sc.model("I have an idet. I want to makes a lot of monei with it.", mode="c"))
