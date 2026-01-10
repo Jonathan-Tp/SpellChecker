@@ -930,13 +930,13 @@ def setup(
     )
     return SpellChecker(lm=lm, vocab_index=vocab_index, suggester=suggester, tau_by_pos=tau_by_pos)
 
-sc = setup(
-        unigram_path="unigrams.json",
-        bigram_path="bigrams.json",
-        tau_by_pos_path="tau_by_pos.json",   # optional but recommended for mode="c"
-        bert_model_ref="JonathanChang/bert_finance_continued",
-        bert_tau=0.0,
-        bert_top_k=20,
-    )
+# sc = setup(
+#         unigram_path="unigrams.json",
+#         bigram_path="bigrams.json",
+#         tau_by_pos_path="tau_by_pos.json",   # optional but recommended for mode="c"
+#         bert_model_ref="JonathanChang/bert_finance_continued",
+#         bert_tau=0.0,
+#         bert_top_k=20,
+#     )
 
-print(sc.model("I have an idet. I want to makes a lot of monei with it.", mode="c"))
+# print(sc.model("I have an idet. I want to makes a lot of monei with it.", mode="c"))

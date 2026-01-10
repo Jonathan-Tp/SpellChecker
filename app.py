@@ -126,10 +126,30 @@ input_text = st.text_area(
     placeholder="Type or paste your text here...")
 
 # Button, use to insert input
+def pick_mode(check_spelling: bool, check_grammar: bool) -> str | None:
+    # If grammar is on (alone or with spelling) => context mode "c"
+    if check_grammar:
+        return "c"
+    # If only spelling is on => non-word mode "n"
+    if check_spelling:
+        return "n"
+    # Neither selected
+    return None
+
 def run_analysis():
-    if input_text.strip():
-        st.session_state.analysis_result = sc.model(input_text, mode="c")
-        st.session_state.last_input = input_text
+    text = input_text.strip()
+    if not text:
+        return
+
+    mode = pick_mode(check_spelling, check_grammar)
+    if mode is None:
+        st.warning("Please select at least one: Check Spelling or Check Grammar.")
+        st.session_state.analysis_result = None
+        return
+
+    st.session_state.analysis_result = sc.model(text, mode=mode)
+    st.session_state.last_input = text
+
 st.button("🔍 Check Text", on_click=run_analysis)
 
 # Results part
@@ -340,15 +360,16 @@ st.markdown("---")
 st.subheader("📖 How to Use")
 
 st.markdown("""
-1. Enter your text in the input area  
-2. Click **Check Text**  
-3. Review:
+1. Select the type of errors to be checked on the side bar.
+2. Enter your text in the input area.  
+3. Click on **Check Text**.  
+4. Review:
    - Text statistics  
    - Spelling errors  
    - Grammar errors  
    - Suggested corrected sentence  
    - Change highlighted words 
-4. Use Dictionary Browser to explore vocabulary
+5. Use Dictionary Browser to explore vocabulary.
 """)
 
 # Features
